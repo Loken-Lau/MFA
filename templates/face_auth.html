@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<h2 class="text-xl font-bold text-center mb-6">{{ "首次录入人脸" if mode == 'register' else "人脸身份核验" }}</h2>
+<video id="video" autoplay muted class="w-full rounded-lg bg-black mb-4 aspect-video object-cover"></video>
+<canvas id="canvas" class="hidden"></canvas>
+<p id="msg" class="text-center text-sm text-blue-600 mb-4 font-medium italic">请正对摄像头</p>
+<button id="snap" class="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition">
+    {{ "立即录入" if mode == 'register' else "验证身份" }}
+</button>
+
+<script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const msg = document.getElementById('msg');
+
+    navigator.mediaDevices.getUserMedia({ video: true }).then(s => video.srcObject = s);
+
+    document.getElementById('snap').onclick = async () => {
+        msg.innerText = "处理中...";
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        canvas.getContext('2d').drawImage(video, 0, 0);
+        const image = canvas.toDataURL('image/jpeg');
+
+        const response = await fetch(window.location.href, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ image })
+        });
+        const result = await response.json();
+        
+        if (result.status === 'success') {
+            window.location.href = result.next;
+        } else {
+            msg.innerText = result.message;
+            msg.className = "text-center text-sm text-red-500 mb-4";
+        }
+    };
+</script>
+{% endblock %}

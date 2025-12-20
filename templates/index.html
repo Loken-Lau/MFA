@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="text-center">
+    <div class="w-20 h-20 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-6">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+    </div>
+    <h2 class="text-3xl font-bold text-slate-800">登录成功！</h2>
+    <p class="text-slate-500 mt-4 italic">欢迎回来，{{ user }}</p>
+    <a href="/logout" class="mt-8 inline-block text-blue-500 hover:underline">安全退出</a>
+</div>
+{% endblock %}
