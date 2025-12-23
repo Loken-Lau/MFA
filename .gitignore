@@ -5,3 +5,5 @@ __pycache__/
 *.pyc
 instance/
 .env
+.gitignore
+mfa_system.db
