@@ -1,12 +1,11 @@
 {% extends "base.html" %}
 {% block content %}
-<h2 class="text-xl font-bold text-center mb-4">绑定身份验证器</h2>
-<div class="bg-gray-100 p-4 rounded-lg mb-6 text-center">
-    <img src="data:image/png;base64,{{ qr_code }}" class="mx-auto w-48 h-48">
+<h2 class="text-lg font-bold text-center mb-4">第三步：绑定 TOTP 令牌</h2>
+<div class="p-4 bg-gray-50 rounded flex justify-center mb-4">
+    <img src="data:image/png;base64,{{ qr_code }}" class="w-48 h-48">
 </div>
 <form method="post" class="space-y-4">
-    <p class="text-xs text-gray-500 mb-2">请使用 Google Authenticator 扫码并输入 6 位验证码：</p>
-    <input name="code" maxlength="6" class="w-full text-center text-2xl py-2 border rounded-lg" placeholder="000000" required>
-    <button type="submit" class="w-full bg-green-600 text-white py-2 rounded-lg font-bold">验证并激活账号</button>
+    <input name="code" placeholder="输入 App 中的 6 位数字" class="w-full border p-2 rounded text-center text-xl tracking-widest" maxlength="6">
+    <button class="w-full bg-green-600 text-white py-2 rounded font-bold">验证并完成</button>
 </form>
 {% endblock %}

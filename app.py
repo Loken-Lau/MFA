@@ -1,188 +1,138 @@
-import os
-import base64
-import io
-import sqlite3
-import json
-import pyotp
-import qrcode
-import face_recognition
-import numpy as np
+import os, base64, io, sqlite3, pyotp, qrcode, face_recognition
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 
-app = Flask(__name__)
-app.secret_key = 'mfa-secure-lab-key-2025' # 安全密钥
-DB_PATH = 'mfa_system.db'
+# 导入自定义逻辑模块
+from client_logic.secure_enclave import LocalSecureEnclave
+from server_logic.auth_engine import ServerAuthEngine
 
-# --- 数据库初始化 ---
+# 1. 初始化 Flask 并支持实例文件夹
+app = Flask(__name__, instance_relative_config=True)
+app.secret_key = 'ecc-mfa-final-safe-2025'
+
+# 确保必要的目录存在
+if not os.path.exists(app.instance_path): os.makedirs(app.instance_path)
+if not os.path.exists('picture'): os.makedirs('picture')
+
+# 定义数据库路径
+DB_PATH = os.path.join(app.instance_path, 'mfa_system.db')
+
+# 初始化逻辑对象
+client_enclave = LocalSecureEnclave('picture')
+server_engine = ServerAuthEngine()
+
 def init_db():
     conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL,
-            mfa_secret TEXT NOT NULL,
-            face_encoding TEXT,
-            mfa_active INTEGER DEFAULT 0
-        )
-    ''')
-    conn.commit()
+    conn.execute('''CREATE TABLE IF NOT EXISTS users 
+                 (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT, 
+                  public_key TEXT, mfa_secret TEXT, mfa_active INTEGER DEFAULT 0)''')
     conn.close()
 
 init_db()
 
-# --- 数据库辅助函数 ---
-def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+# --- 路由开始 ---
 
-# --- 图像处理工具 ---
-def process_base64_image(base64_str):
-    header, encoded = base64_str.split(",", 1)
-    data = base64.b64decode(encoded)
-    with open("temp_capture.jpg", "wb") as f:
-        f.write(data)
-    return face_recognition.load_image_file("temp_capture.jpg")
-
-# --- 路由逻辑 ---
-
+# 1. 首页
 @app.route('/')
 def index():
-    if not session.get('mfa_verified'):
-        return redirect(url_for('login'))
+    if not session.get('mfa_verified'): return redirect(url_for('login'))
     return render_template('index.html', user=session['user'])
 
+# 2. 注册
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        hashed_pw = generate_password_hash(password)
-        secret = pyotp.random_base32()
-        
-        conn = get_db_connection()
-        try:
-            conn.execute('INSERT INTO users (username, password, mfa_secret) VALUES (?, ?, ?)',
-                         (username, hashed_pw, secret))
-            conn.commit()
-            session['temp_reg_user'] = username
-            return redirect(url_for('setup_mfa'))
-        except sqlite3.IntegrityError:
-            return "用户名已存在"
-        finally:
-            conn.close()
+        session['reg_uname'] = request.form['username']
+        session['reg_pwd'] = generate_password_hash(request.form['password'])
+        return redirect(url_for('face_auth', mode='register'))
     return render_template('register.html')
 
+# 3. 登录
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        uname, pwd = request.form['username'], request.form['password']
+        conn = sqlite3.connect(DB_PATH); conn.row_factory = sqlite3.Row
+        user = conn.execute('SELECT * FROM users WHERE username = ?', (uname,)).fetchone()
+        conn.close()
+        if user and check_password_hash(user['password'], pwd):
+            session.clear()
+            session['temp_user'] = uname
+            if not user['mfa_active']: return redirect(url_for('setup_mfa'))
+            return redirect(url_for('face_auth', mode='verify'))
+        return "用户名或密码错误"
+    return render_template('login.html')
+
+# 4. 人脸认证（核心：ECC 签名）
+@app.route('/face_auth/<mode>', methods=['GET', 'POST'])
+def face_auth(mode):
+    if request.method == 'POST':
+        img_data = base64.b64decode(request.json['image'].split(',')[1])
+        frame = face_recognition.load_image_file(io.BytesIO(img_data))
+        
+        if mode == 'register':
+            encs = face_recognition.face_encodings(frame)
+            if not encs: return jsonify({"status": "error", "message": "未检测到人脸"})
+            pub_key = client_enclave.enroll(session['reg_uname'], encs[0])
+            mfa_secret = pyotp.random_base32()
+            conn = sqlite3.connect(DB_PATH)
+            conn.execute('INSERT INTO users (username, password, public_key, mfa_secret) VALUES (?,?,?,?)',
+                         (session['reg_uname'], session['reg_pwd'], pub_key, mfa_secret))
+            conn.commit(); conn.close()
+            session['temp_reg_user'] = session['reg_uname']
+            return jsonify({"status": "success", "next": url_for('setup_mfa')})
+
+        elif mode == 'verify':
+            challenge = session.get('challenge')
+            signature = client_enclave.sign(session['temp_user'], frame, challenge)
+            if signature:
+                conn = sqlite3.connect(DB_PATH); conn.row_factory = sqlite3.Row
+                user = conn.execute('SELECT public_key FROM users WHERE username = ?', (session['temp_user'],)).fetchone(); conn.close()
+                if server_engine.verify_signature(user['public_key'], signature, challenge):
+                    session['face_ok'] = True
+                    return jsonify({"status": "success", "next": url_for('otp_verify')})
+            return jsonify({"status": "error", "message": "人脸认证或 ECC 签名失败"})
+
+    if mode == 'verify': session['challenge'] = os.urandom(16).hex()
+    return render_template('face_auth.html', mode=mode)
+
+# 5. 绑定 TOTP (解决之前的 BuildError)
 @app.route('/setup_mfa', methods=['GET', 'POST'])
 def setup_mfa():
     username = session.get('temp_reg_user')
     if not username: return redirect(url_for('register'))
-    
-    conn = get_db_connection()
-    user = conn.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
-    conn.close()
+    conn = sqlite3.connect(DB_PATH); conn.row_factory = sqlite3.Row
+    user = conn.execute('SELECT mfa_secret FROM users WHERE username = ?', (username,)).fetchone(); conn.close()
     
     totp = pyotp.totp.TOTP(user['mfa_secret'])
-    
     if request.method == 'POST':
-        code = request.form.get('code')
-        if totp.verify(code):
-            conn = get_db_connection()
+        if totp.verify(request.form.get('code')):
+            conn = sqlite3.connect(DB_PATH)
             conn.execute('UPDATE users SET mfa_active = 1 WHERE username = ?', (username,))
-            conn.commit()
-            conn.close()
+            conn.commit(); conn.close()
             return redirect(url_for('login'))
-        return "动态码校验失败，请重试"
+        return "动态码错误"
 
-    uri = totp.provisioning_uri(name=username, issuer_name="MFA_Secure_Lab")
-    img = qrcode.make(uri)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    qr_code = base64.b64encode(buf.getvalue()).decode()
-    return render_template('setup_mfa.html', qr_code=qr_code)
+    uri = totp.provisioning_uri(name=username, issuer_name="ECC_MFA_Project")
+    img = qrcode.make(uri); buf = io.BytesIO(); img.save(buf, format="PNG")
+    qr_b64 = base64.b64encode(buf.getvalue()).decode()
+    return render_template('setup_mfa.html', qr_code=qr_b64)
 
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        
-        conn = get_db_connection()
-        user = conn.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
-        conn.close()
-        
-        if user and check_password_hash(user['password'], password):
-            if not user['mfa_active']:
-                session['temp_reg_user'] = username
-                return redirect(url_for('setup_mfa'))
-            
-            session.clear()
-            session['temp_user'] = username
-            if user['face_encoding'] is None:
-                return redirect(url_for('face_auth', mode='register'))
-            return redirect(url_for('face_auth', mode='verify'))
-        return "身份验证失败"
-    return render_template('login.html')
-
-@app.route('/face_auth/<mode>', methods=['GET', 'POST'])
-def face_auth(mode):
-    if 'temp_user' not in session: return redirect(url_for('login'))
-    
-    if request.method == 'POST':
-        image_data = request.json.get('image')
-        image = process_base64_image(image_data)
-        encodings = face_recognition.face_encodings(image)
-        
-        if not encodings:
-            return jsonify({"status": "error", "message": "未检测到人脸"})
-        
-        if mode == 'register':
-            encoding_json = json.dumps(encodings[0].tolist())
-            conn = get_db_connection()
-            conn.execute('UPDATE users SET face_encoding = ? WHERE username = ?', 
-                         (encoding_json, session['temp_user']))
-            conn.commit()
-            conn.close()
-            return jsonify({"status": "success", "next": url_for('login')})
-            
-        elif mode == 'verify':
-            conn = get_db_connection()
-            user = conn.execute('SELECT face_encoding FROM users WHERE username = ?', 
-                                (session['temp_user'],)).fetchone()
-            conn.close()
-            
-            target_encoding = np.array(json.loads(user['face_encoding']))
-            match = face_recognition.compare_faces([target_encoding], encodings[0], tolerance=0.4)
-            
-            if match[0]:
-                session['face_ok'] = True
-                return jsonify({"status": "success", "next": url_for('otp_verify')})
-            return jsonify({"status": "error", "message": "人脸不匹配"})
-
-    return render_template('face_auth.html', mode=mode)
-
+# 6. OTP 校验
 @app.route('/otp_verify', methods=['GET', 'POST'])
 def otp_verify():
     if not session.get('face_ok'): return redirect(url_for('login'))
-    
     if request.method == 'POST':
-        code = request.form.get('code')
-        conn = get_db_connection()
-        user = conn.execute('SELECT mfa_secret FROM users WHERE username = ?', 
-                            (session['temp_user'],)).fetchone()
-        conn.close()
-        
-        if pyotp.totp.TOTP(user['mfa_secret']).verify(code):
+        conn = sqlite3.connect(DB_PATH); conn.row_factory = sqlite3.Row
+        user = conn.execute('SELECT mfa_secret FROM users WHERE username = ?', (session['temp_user'],)).fetchone(); conn.close()
+        if pyotp.totp.TOTP(user['mfa_secret']).verify(request.form.get('code')):
             session['user'] = session['temp_user']
             session['mfa_verified'] = True
             return redirect(url_for('index'))
-        return "动态码错误"
-        
+        return "OTP 码错误"
     return render_template('otp_auth.html')
 
+# 7. 退出
 @app.route('/logout')
 def logout():
     session.clear()

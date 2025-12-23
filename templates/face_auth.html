@@ -1,39 +1,34 @@
 {% extends "base.html" %}
 {% block content %}
-<h2 class="text-xl font-bold text-center mb-6">{{ "首次录入人脸" if mode == 'register' else "人脸身份核验" }}</h2>
-<video id="video" autoplay muted class="w-full rounded-lg bg-black mb-4 aspect-video object-cover"></video>
-<canvas id="canvas" class="hidden"></canvas>
-<p id="msg" class="text-center text-sm text-blue-600 mb-4 font-medium italic">请正对摄像头</p>
-<button id="snap" class="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition">
-    {{ "立即录入" if mode == 'register' else "验证身份" }}
-</button>
+<h2 class="text-xl font-bold text-center mb-4">{{ "第一步：录入人脸凭证" if mode == 'register' else "第二步：刷脸签署挑战码" }}</h2>
+<video id="video" autoplay muted class="w-full rounded shadow-inner mb-4"></video>
+<div id="msg" class="text-center text-blue-600 mb-4 font-mono text-sm">正在初始化摄像头...</div>
+<button id="snap" class="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition">点击识别</button>
 
 <script>
     const video = document.getElementById('video');
-    const canvas = document.getElementById('canvas');
     const msg = document.getElementById('msg');
-
-    navigator.mediaDevices.getUserMedia({ video: true }).then(s => video.srcObject = s);
+    navigator.mediaDevices.getUserMedia({ video: true }).then(s => {
+        video.srcObject = s;
+        msg.innerText = "摄像头已就绪";
+    });
 
     document.getElementById('snap').onclick = async () => {
-        msg.innerText = "处理中...";
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
+        msg.innerText = "处理中，请稍后...";
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth; canvas.height = video.videoHeight;
         canvas.getContext('2d').drawImage(video, 0, 0);
-        const image = canvas.toDataURL('image/jpeg');
-
-        const response = await fetch(window.location.href, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ image })
-        });
-        const result = await response.json();
         
-        if (result.status === 'success') {
-            window.location.href = result.next;
+        const resp = await fetch(window.location.href, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ image: canvas.toDataURL('image/jpeg') })
+        });
+        const res = await resp.json();
+        if(res.status === 'success') {
+            msg.innerText = "认证成功！";
+            window.location.href = res.next;
         } else {
-            msg.innerText = result.message;
-            msg.className = "text-center text-sm text-red-500 mb-4";
+            msg.innerText = "错误: " + res.message;
         }
     };
 </script>

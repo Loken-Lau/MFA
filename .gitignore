@@ -8,3 +8,4 @@ instance/
 .gitignore
 picture/
 mfa_system.db
+local_secure_storage/
